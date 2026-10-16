@@ -1,140 +1,102 @@
 # Stock Market Direction Prediction with ML and BiLSTM
 
 ![Python](https://img.shields.io/badge/Python-3-3776AB?style=flat-square&logo=python&logoColor=white)
-![TensorFlow](https://img.shields.io/badge/TensorFlow-2.19-FF6F00?style=flat-square&logo=tensorflow&logoColor=white)
+![TensorFlow](https://img.shields.io/badge/TensorFlow-FF6F00?style=flat-square&logo=tensorflow&logoColor=white)
 ![XGBoost](https://img.shields.io/badge/XGBoost-2c5364?style=flat-square)
 ![scikit-learn](https://img.shields.io/badge/scikit--learn-F7931E?style=flat-square&logo=scikitlearn&logoColor=white)
 ![Colab](https://img.shields.io/badge/Google%20Colab-F9AB00?style=flat-square&logo=googlecolab&logoColor=white)
 
-An end-to-end pipeline that predicts whether a stock will close **up or down tomorrow**. It builds 85 technical features from five years of daily prices, compares Random Forest, XGBoost and a Bidirectional LSTM with time-aware validation, and backtests the winner against buy-and-hold.
+Predicts whether a stock will close **up or down tomorrow**. The notebook builds 71 technical features from daily prices, trains Random Forest, XGBoost and a Bidirectional LSTM, and then asks the question most stock-prediction notebooks skip: **does any model beat a trivial rule, after trading costs, by more than luck would?**
 
-Every number below comes from one full run on **AAPL, January 2019 to April 2026**.
+## Version 2: what changed and why
 
-## Results at a glance
+Version 1 reported the BiLSTM as the winner with an F1 of 0.672 and a backtest that beat buy-and-hold. A closer look showed that this result came from the evaluation, not the model.
 
-| | |
+**The finding.** On the 183 test days, the BiLSTM predicted "up" on 94.5% of them. Its accuracy (51.9%) was exactly the share of up-days, and its balanced accuracy was 0.502, a coin flip. A rule that says "up" every day scores a **higher** F1 (0.683) than the BiLSTM did. Because the strategy was invested almost every day, its backtest was buy-and-hold under another name.
+
+**The proof.** Running the version 1 notebook on a pure random walk, where tomorrow cannot be predicted at all, gives the same picture: the BiLSTM "wins" with F1 0.68 by predicting "up" every day, and its backtest is identical to buy-and-hold.
+
+Version 2 fixes the evaluation so this cannot happen silently:
+
+| Problem in version 1 | Fix in version 2 |
 |:--|:--|
-| Features engineered | **85** (the brief asked for 50+) |
-| Best model (test F1) | **BiLSTM, F1 0.672**, recall 0.947 |
-| Strategy return vs buy-and-hold | **22.04% vs 21.60%** |
-| Sharpe ratio, strategy vs benchmark | **1.143 vs 1.117** |
-| Max drawdown, strategy vs benchmark | -13.80% vs -13.80% |
-| Directional win rate | 51.91% |
+| F1 on the "up" class picks the model that says "up" most often | Balanced accuracy, MCC and ROC-AUC reported next to F1, plus two baselines: **always up** and **same as today** |
+| The winner was chosen by its **test** score, then backtested on the same test data | The winner is chosen on a separate **validation** block; the test block is used once |
+| Price-level features (moving averages, band edges, ATR in dollars, cumulative OBV) drift outside the training range | All 71 features are scale-free: returns, ratios to moving averages, oscillators, normalised widths |
+| The next-day BiLSTM signal used the window ending at the **end of training**, a year old | It uses the most recent 60 days |
+| The latest trading day was dropped, so "tomorrow" was a day already known | The latest day is kept for the live signal and only excluded from training |
+| BiLSTM windows ended the day **before** the prediction day | Windows include the prediction day's own features |
+| The BiLSTM skipped the first 60 test days, so models were compared on different rows | Windows borrow earlier features, so all models predict exactly the same test days |
+| Early stopping and model choice used the same validation data | Early stopping uses its own slice of the training block |
+| Fixed 0.5 cutoff, which made models with shifted probabilities predict one class only | Each model's cutoff is the median of its own validation probabilities (no labels used) |
+| No trading costs; the "AUC" in the confusion-matrix titles was computed from hard labels | 5 bps per trade, exposure and trade count reported; titles show balanced accuracy |
+| No way to tell skill from luck | Binomial test and a 2,000-shuffle permutation test of the strategy's Sharpe ratio |
+| One train/test split | Walk-forward evaluation that retrains the tree models every month |
+| No seed for TensorFlow, so runs were not reproducible | One seed for Python, NumPy and TensorFlow |
 
-The edge over buy-and-hold is small, and the limitations section explains why it should not be overclaimed.
+## How the pipeline was verified
+
+The new notebook has a switch, `SANITY_CHECK = True`, that replaces real prices with simulated ones. It was run end to end three ways:
+
+| Simulated market | What should happen | What happened |
+|:--|:--|:--|
+| **Random walk** (nothing is predictable), 3 different seeds | No model beats the baselines; tests say "luck" | Best model's balanced accuracy 0.51 to 0.53; binomial p = 0.20 to 0.36, permutation p = 0.06 to 0.28: no false alarm |
+| **Weak momentum** (each day's return carries 20% into the next) | A small edge, too small to prove on one year | Every model slightly above a coin flip (MCC +0.02 to +0.09); tests not significant |
+| **Strong momentum** (40% carry-over) | A clear edge that the tests detect | Balanced accuracy up to 0.59; binomial p = 0.002, permutation p = 0.001 |
+
+So the pipeline does not invent an edge where there is none, and it does find one where there is.
+
+## Results on real data
+
+Open the notebook in Colab and run it to produce the real-data results for any ticker. The cells to read are:
+
+1. **Cell 10**: models next to the baselines. The question is whether any model beats *always up* on balanced accuracy, MCC and ROC-AUC.
+2. **Cell 11**: the backtest after costs, with exposure. A strategy invested 95% of the time is buy-and-hold.
+3. **Cell 12**: the significance tests. A p-value above 0.05 means the timing is not distinguishable from luck.
+
+Daily direction for a large-cap stock is close to unpredictable from price history alone, so the expected honest outcome is a balanced accuracy near 0.5. Showing that clearly, with the tooling to prove it, is the point of the project.
 
 ## How to run
 
 1. Open the notebook in [Google Colab](https://colab.research.google.com) (File, then Upload notebook).
-2. Set the runtime to a **T4 GPU** (Runtime, then Change runtime type). The BiLSTM also trains on CPU, only slower.
-3. Run all cells (Ctrl + F9). The full pipeline takes about 5 to 8 minutes on a T4.
-4. To try another stock, change `TICKER` in cell 2, for example `TSLA`, `MSFT`, `RELIANCE.NS` or the Nifty 50 index `^NSEI`.
+2. Set the runtime to a **T4 GPU** (Runtime, then Change runtime type). The BiLSTM also trains on a CPU, only more slowly.
+3. Run all cells. The full pipeline, including the permutation and walk-forward tests, takes about 5 minutes on a T4.
+4. Change `TICKER` in cell 2 to try another stock, for example `TSLA`, `MSFT`, `RELIANCE.NS` or `^NSEI`.
+5. Set `SANITY_CHECK = True` to rerun everything on a random walk and confirm that no edge appears.
 
-Cell 1 installs everything extra (`yfinance`, `ta`, `xgboost`, `shap`); the rest ships with Colab.
+## Pipeline
 
-## Data
-
-| | |
+| Cell | Step |
 |:--|:--|
-| Ticker | AAPL, from Yahoo Finance |
-| Period | 2019-01-02 to 2026-04-07 |
-| Rows | 1,825 downloaded, 1,625 after the rolling-window warm-up |
-| Target | 1 if tomorrow's close is above today's, else 0 |
-| Class balance | 868 up, 757 down (no resampling needed) |
+| 1 to 3 | Imports, configuration, data download (or a simulated random walk) |
+| 4 | 71 scale-free features in six groups: returns, trend, momentum, volatility, volume, lags |
+| 5 | Feature distributions on up vs down days, correlations |
+| 6 | Chronological train, validation and test split; metrics and baselines |
+| 7 to 9 | Random Forest, XGBoost and BiLSTM, each with time-series cross-validation |
+| 10 | Model choice on validation; test comparison against the baselines; ROC curves |
+| 11 | Backtest with costs, exposure and trade counts |
+| 12 | Binomial and permutation tests |
+| 13 | Walk-forward retraining of the tree models |
+| 14 to 15 | Confusion matrices and SHAP explanations |
+| 16 | Next-day signal from the latest data |
+| 17 | Summary dashboard |
 
-## Feature engineering (85 features)
+## Features (71)
 
 | Group | Features |
 |:--|:--|
-| Price | Returns over 1, 2, 5, 10 and 21 days, log returns, high-low ratio, close-to-open drift, overnight gap |
-| Trend | SMA and EMA at 5 to 200 days, close-vs-SMA ratios, MACD with signal and histogram, ADX with +DI and -DI, Parabolic SAR |
+| Returns and shape | Returns over 1, 2, 5, 10 and 21 days, log return, high-low range, open-to-close drift, overnight gap |
+| Trend | Close vs SMA and EMA at 5 to 200 days, SMA crossovers, MACD scaled by price, ADX with +DI and -DI, close vs Parabolic SAR |
 | Momentum | RSI 14 and 28 with overbought and oversold flags, Stochastic, Williams %R, ROC 5 and 21, CCI, MFI |
-| Volatility | Bollinger width and %B, ATR / close, Keltner %, Donchian channel and width, rolling volatility at 5 and 21 days and their ratio |
-| Volume | 20-day volume SMA, volume ratio, On-Balance Volume, rolling VWAP |
-| Lags and statistics | Lags of return, volume ratio and RSI at 1, 2, 3, 5 and 10 days, 21-day skew and kurtosis, return cross-correlation |
-
-## Validation design
-
-The data is never shuffled: the test set is always the most recent year.
-
-| Split | Rows | Dates |
-|:--|:--|:--|
-| Train | 1,382 | 2019-10-16 to 2025-04-15 |
-| Test | 243 | 2025-04-16 to 2026-04-06 |
-
-- `RobustScaler` is fitted on the training data only, so nothing leaks from the future.
-- Tree models use 5-fold `TimeSeriesSplit`, where every validation fold comes after its training data.
-- The BiLSTM uses 60-day sequences and keeps the weights with the best validation AUC.
-
-## Models
-
-**Random Forest:** 500 trees, max depth 8, at least 10 samples per leaf, balanced class weights.
-
-**XGBoost:** 600 trees, max depth 5, learning rate 0.05, row and column subsampling, L1 and L2 regularisation.
-
-**Bidirectional LSTM:** about 389,000 parameters.
-
-```
-Input (60 days x 85 features)
-BiLSTM(128) -> BatchNorm -> Dropout(0.3)
-BiLSTM(64)  -> BatchNorm -> Dropout(0.3)
-Dense(32, relu) -> Dropout(0.15) -> Dense(1, sigmoid)
-```
-
-## Head-to-head on the test period
-
-Scored on the 183 test days that all three models can predict (the BiLSTM needs 60 days of history first).
-
-| Model | F1 | ROC-AUC | Precision | Recall |
-|:--|:--|:--|:--|:--|
-| Random Forest | 0.260 | 0.506 | 0.472 | 0.179 |
-| XGBoost | 0.535 | 0.491 | 0.544 | 0.526 |
-| **BiLSTM** | **0.672** | 0.476 | 0.520 | **0.947** |
-
-- **BiLSTM** catches almost every up-day but also calls most down-days "up" (90 TP, 83 FP, 5 FN, 5 TN). It works as a threshold classifier, not as a well-calibrated ranker.
-- **XGBoost** is the balanced one (50 TP, 42 FP, 45 FN, 41 TN).
-- **Random Forest** is cautious: precise when it says "up", but it misses most up-days (17 TP, 19 FP, 78 FN, 69 TN).
-
-On the full 243-day test set, the tree models score F1 0.366 (Random Forest) and 0.526 (XGBoost).
-
-## Backtest
-
-The strategy is long on days the BiLSTM predicts "up" and in cash otherwise. It uses no shorting, no leverage and no transaction costs, and starts with $100,000.
-
-| Metric | Buy and hold | BiLSTM strategy |
-|:--|:--|:--|
-| Total return | 21.60% | **22.04%** |
-| Annual return | 30.90% | **31.55%** |
-| Annual volatility | 22.86% | **22.74%** |
-| Sharpe ratio | 1.117 | **1.143** |
-| Max drawdown | -13.80% | -13.80% |
-
-## Explainability (SHAP)
-
-SHAP values on XGBoost (first 300 test days) rank **On-Balance Volume** first, followed by the 1-day return, close vs 10-day SMA, 10-day volume lag and ADX. Lagged returns at 2 to 5 days carry more signal than yesterday's return, which is consistent with research on short-term momentum.
+| Volatility | Bollinger width and %B, ATR as % of price, Keltner %, Donchian position and width, rolling volatility at 5 and 21 days and their ratio |
+| Volume | Volume vs its 20-day average, 21-day On-Balance Volume flow, close vs 20-day VWAP |
+| Lags and statistics | Lags of return, volume ratio and RSI at 1 to 10 days, 21-day skew and kurtosis, return cross-correlation |
 
 ## Limitations
 
-- **One stock, one period.** AAPL trended up for most of the window, so a model with 95% recall on up-days may just have learned that AAPL usually rises. It needs testing on sideways and falling markets.
-- **No transaction costs.** Spreads and commissions would eat most of the small outperformance.
-- **A 51.9% win rate over 183 days** is not enough to rule out noise. A multi-year out-of-sample test is needed.
-
-## Next steps
-
-1. Walk-forward validation with monthly retraining
-2. Probability calibration (Platt or isotonic) for XGBoost
-3. A weighted ensemble of all three models
-4. Transaction costs in the backtest
-5. Regime detection to switch models between trending and choppy markets
-6. News sentiment and implied volatility as extra features
-
-## Files
-
-| File | Purpose |
-|:--|:--|
-| `Stock_Market_BiLSTM_Prediction.ipynb` | The full pipeline in 15 cells |
-
-When it runs, the notebook saves its charts as PNG files: price history, feature distributions, correlation heatmap, feature importance, BiLSTM training curves, model comparison, confusion matrices, backtest, SHAP plots and a final dashboard.
+- **Price history alone carries very little information** about tomorrow's direction for a liquid stock. Better inputs (news, earnings, options data) matter more than a bigger model.
+- **One year of test data is short.** The tests can only detect a fairly large edge; a small real one would need several years of out-of-sample data.
+- **Closing-auction execution is assumed.** The signal uses day *t*'s close and trades at that same close, which is optimistic for anything but closing-auction orders.
 
 ## Disclaimer
 
